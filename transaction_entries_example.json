@@ -1,0 +1,18 @@
+[
+  {
+    "account_code": "1100",
+    "entry_type": "DEBIT",
+    "amount": "5000.00",
+    "cost_center": "CC01",
+    "business_unit": "SALES",
+    "memo": "Recebimento de venda à vista"
+  },
+  {
+    "account_code": "4100",
+    "entry_type": "CREDIT",
+    "amount": "5000.00",
+    "cost_center": "CC01",
+    "business_unit": "SALES",
+    "memo": "Receita de venda produto X"
+  }
+]
