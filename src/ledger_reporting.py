@@ -7,9 +7,7 @@ Módulo de geração de relatórios auditáveis e reproduzíveis.
 Este módulo garante que todos os relatórios sejam:
 - Reproduzíveis: mesmos parâmetros = mesmo resultado
 - Auditáveis: trilha completa de geração
-- Assin
-
-áveis: hash de integridade
+- Assináveis: hash de integridade
 - Versionados: controle de versão de relatórios
 
 Version: 1.0.0
@@ -28,7 +26,7 @@ from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
 from src.ledger_engine import (
-    LedgerEngine, AccountType, TransactionStatus,
+    LedgerEngine, AccountType, TransactionStatus, SeverityLevel,
     Base, ChartOfAccounts, Transaction, JournalEntry, AuditLog
 )
 
@@ -97,9 +95,11 @@ class LedgerReportEngine:
                 'report_hash': report_hash
             }
             
+            # Corrigido: Adicionado parâmetro severity
             self.ledger._log_audit(
                 session=session,
                 event_type="REPORT_GENERATED",
+                severity=SeverityLevel.INFO,
                 action="GENERATE_REPORT",
                 description=f"Report {report_type} generated: {report_name}",
                 user_id=generated_by,
@@ -235,7 +235,10 @@ class LedgerReportEngine:
             accounts = session.query(ChartOfAccounts)\
                 .filter(
                     ChartOfAccounts.is_active == True,
-                    ChartOfAccounts.account_type.in_(['REVENUE', 'EXPENSE'])
+                    ChartOfAccounts.account_type.in_([
+                        AccountType.REVENUE.value,
+                        AccountType.EXPENSE.value
+                    ])
                 )\
                 .order_by(ChartOfAccounts.account_code)\
                 .all()
@@ -244,53 +247,39 @@ class LedgerReportEngine:
             expenses = []
             
             for account in accounts:
-                # Get activity for period
-                query = session.query(JournalEntry)\
-                    .join(Transaction)\
-                    .filter(
-                        JournalEntry.account_code == account.account_code,
-                        Transaction.status == TransactionStatus.POSTED.value,
-                        Transaction.posting_date >= start_date,
-                        Transaction.posting_date <= end_date
-                    )
+                # Get transactions in period
+                balance = self.ledger.get_account_balance(
+                    account.account_code,
+                    end_date
+                )
                 
-                entries = query.all()
+                # Get balance at start of period
+                start_balance = self.ledger.get_account_balance(
+                    account.account_code,
+                    start_date
+                )
                 
-                # Calculate net for period
-                total_debits = Decimal('0')
-                total_credits = Decimal('0')
+                period_balance = balance - start_balance
                 
-                for entry in entries:
-                    if entry.entry_type == 'DEBIT':
-                        total_debits += entry.amount
-                    else:
-                        total_credits += entry.amount
-                
-                # Revenue increases with credits, expense increases with debits
-                account_type = AccountType(account.account_type)
-                
-                if account_type == AccountType.REVENUE:
-                    net_amount = total_credits - total_debits
-                else:  # EXPENSE
-                    net_amount = total_debits - total_credits
-                
-                if not include_zero_balances and net_amount == 0:
+                if not include_zero_balances and period_balance == 0:
                     continue
                 
                 account_data = {
                     'account_code': account.account_code,
                     'account_name': account.account_name,
-                    'amount': float(net_amount)
+                    'balance': float(abs(period_balance))
                 }
+                
+                account_type = AccountType(account.account_type)
                 
                 if account_type == AccountType.REVENUE:
                     revenues.append(account_data)
-                else:
+                elif account_type == AccountType.EXPENSE:
                     expenses.append(account_data)
             
             # Calculate totals
-            total_revenue = sum(r['amount'] for r in revenues)
-            total_expenses = sum(e['amount'] for e in expenses)
+            total_revenue = sum(r['balance'] for r in revenues)
+            total_expenses = sum(e['balance'] for e in expenses)
             net_income = total_revenue - total_expenses
             
             # Build report
@@ -334,69 +323,129 @@ class LedgerReportEngine:
     # TRIAL BALANCE
     # ========================
     
-    def generate_trial_balance(
+    def generate_trial_balance_report(
         self,
         as_of_date: datetime,
         generated_by: str,
         include_zero_balances: bool = False
     ) -> Dict[str, Any]:
         """
-        Generate Trial Balance (Balancete de Verificação).
+        Generate Trial Balance Report (Balancete de Verificação).
         
         Returns:
             Dict with trial balance data and metadata
         """
         report_id = self._generate_report_id()
         
-        trial_balance_data = self.ledger.get_trial_balance(as_of_date)
+        # Get trial balance
+        trial_balance = self.ledger.get_trial_balance(as_of_date)
         
         # Filter zero balances if requested
         if not include_zero_balances:
-            trial_balance_data = [
-                account for account in trial_balance_data
-                if account['balance'] != 0
+            trial_balance = [
+                account for account in trial_balance
+                if account['balance'] != Decimal('0')
             ]
         
+        # Calculate totals
+        total_debits = sum(
+            abs(float(a['balance'])) for a in trial_balance
+            if a['balance'] > 0
+        )
+        total_credits = sum(
+            abs(float(a['balance'])) for a in trial_balance
+            if a['balance'] < 0
+        )
+        
         # Convert Decimal to float for JSON serialization
-        for account in trial_balance_data:
+        for account in trial_balance:
             account['balance'] = float(account['balance'])
         
-        # Calculate totals by type
-        totals_by_type = {}
-        for account in trial_balance_data:
-            acc_type = account['account_type']
-            if acc_type not in totals_by_type:
-                totals_by_type[acc_type] = 0
-            totals_by_type[acc_type] += account['balance']
-        
         # Build report
-        trial_balance = {
+        trial_balance_report = {
             'report_id': report_id,
             'report_type': 'TRIAL_BALANCE',
             'report_name': f'Trial Balance as of {as_of_date.date()}',
             'as_of_date': as_of_date.isoformat(),
             'generated_at': datetime.now(timezone.utc).isoformat(),
             'generated_by': generated_by,
-            'accounts': trial_balance_data,
-            'totals_by_type': totals_by_type,
-            'account_count': len(trial_balance_data)
+            'accounts': trial_balance,
+            'totals': {
+                'total_debits': total_debits,
+                'total_credits': total_credits,
+                'is_balanced': abs(total_debits - total_credits) < 0.01
+            }
         }
         
         # Calculate hash
-        report_hash = self._calculate_report_hash(trial_balance)
-        trial_balance['report_hash'] = report_hash
+        report_hash = self._calculate_report_hash(trial_balance_report)
+        trial_balance_report['report_hash'] = report_hash
         
         # Save metadata
         self._save_report_metadata(
             report_id=report_id,
             report_type='TRIAL_BALANCE',
-            report_name=trial_balance['report_name'],
+            report_name=trial_balance_report['report_name'],
             parameters={'as_of_date': as_of_date.isoformat()},
             generated_by=generated_by,
             report_hash=report_hash
         )
         
-        return trial_balance
+        return trial_balance_report
+    
+    # ========================
+    # INTEGRITY VERIFICATION
+    # ========================
+    
+    def generate_integrity_report(
+        self,
+        generated_by: str
+    ) -> Dict[str, Any]:
+        """
+        Generate comprehensive integrity verification report.
+        
+        Returns:
+            Dict with integrity verification data
+        """
+        report_id = self._generate_report_id()
+        
+        with self.session_factory() as session:
+            # Verify double-entry integrity
+            is_valid, errors = self.ledger.verify_double_entry_integrity()
+            
+            # Count transactions
+            total_transactions = session.query(Transaction)\
+                .filter(Transaction.status == TransactionStatus.POSTED.value)\
+                .count()
+            
+            # Build report
+            integrity_report = {
+                'report_id': report_id,
+                'report_type': 'INTEGRITY_VERIFICATION',
+                'report_name': 'Integrity Verification Report',
+                'generated_at': datetime.now(timezone.utc).isoformat(),
+                'generated_by': generated_by,
+                'is_valid': is_valid,
+                'total_transactions': total_transactions,
+                'errors': errors,
+                'error_count': len(errors)
+            }
+            
+            # Calculate hash
+            report_hash = self._calculate_report_hash(integrity_report)
+            integrity_report['report_hash'] = report_hash
+            
+            # Save metadata
+            self._save_report_metadata(
+                report_id=report_id,
+                report_type='INTEGRITY_VERIFICATION',
+                report_name=integrity_report['report_name'],
+                parameters={},
+                generated_by=generated_by,
+                report_hash=report_hash
+            )
+            
+            return integrity_report
     
     # ========================
     # GENERAL LEDGER
@@ -410,12 +459,10 @@ class LedgerReportEngine:
         account_code: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Generate General Ledger report.
-        
-        Shows all transactions for a period, optionally filtered by account.
+        Generate General Ledger Report (Razão Geral).
         
         Returns:
-            Dict with general ledger data and metadata
+            Dict with general ledger data
         """
         report_id = self._generate_report_id()
         

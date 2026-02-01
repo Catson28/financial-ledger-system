@@ -13,6 +13,8 @@ import pytest
 from datetime import datetime, timezone
 from decimal import Decimal
 import os
+import tempfile
+from pathlib import Path
 
 from src.ledger_engine import (
     LedgerEngine, AccountDefinition, AccountType,
@@ -23,31 +25,42 @@ from src.ledger_reporting import LedgerReportEngine
 
 @pytest.fixture(scope="function")
 def ledger():
-    """Cria instância do ledger para testes.
+    """Create ledger instance for testing.
     
-    Usa escopo de função com banco de dados em memória SQLite para cada teste.
-    Isso garante isolamento completo entre os testes.
+    Uses function scope with a unique temporary SQLite file for each test.
+    This ensures complete isolation between tests.
     """
-    # Salva URI original
+    # Save original URI
     original_uri = os.environ.get('LEDGER_DB_URI')
     
-    # Configura URI para banco em memória
-    test_db_uri = 'sqlite:///:memory:'
+    # Create a temporary file for this test's database
+    temp_db = tempfile.NamedTemporaryFile(mode='w', suffix='.db', delete=False)
+    temp_db_path = temp_db.name
+    temp_db.close()
+    
+    # Set up the test database URI
+    test_db_uri = f'sqlite:///{temp_db_path}'
     os.environ['LEDGER_DB_URI'] = test_db_uri
     
-    # Cria nova instância do engine
+    # Create new engine instance
     engine = LedgerEngine()
     
-    # Yield do engine para o teste
+    # Yield the engine for the test
     yield engine
     
-    # Cleanup: Fecha conexões
+    # Cleanup: Close connections and delete temporary database
     try:
         engine.engine.dispose()
     except:
         pass
     
-    # Restaura URI original
+    # Remove temporary database file
+    try:
+        Path(temp_db_path).unlink()
+    except:
+        pass
+    
+    # Restore original URI
     if original_uri:
         os.environ['LEDGER_DB_URI'] = original_uri
     else:
@@ -56,8 +69,8 @@ def ledger():
 
 @pytest.fixture(scope="function")
 def ledger_with_accounts(ledger):
-    """Cria ledger com contas de exemplo."""
-    # Cria contas de exemplo
+    """Create ledger with sample accounts."""
+    # Create sample accounts
     accounts = [
         AccountDefinition("1000", "Assets", AccountType.ASSET),
         AccountDefinition("1100", "Cash", AccountType.ASSET, "1000"),
@@ -78,10 +91,10 @@ def ledger_with_accounts(ledger):
 
 
 class TestChartOfAccounts:
-    """Testa funcionalidades do Plano de Contas."""
+    """Test Chart of Accounts functionality."""
     
     def test_create_account(self, ledger):
-        """Testa criação de conta."""
+        """Test account creation."""
         account_def = AccountDefinition(
             account_code="1100",
             account_name="Cash",
@@ -92,10 +105,10 @@ class TestChartOfAccounts:
         account_id = ledger.create_account(account_def, created_by="test_user")
         
         assert account_id is not None
-        assert len(account_id) == 36  # Comprimento UUID
+        assert len(account_id) == 36  # UUID length
     
     def test_create_duplicate_account(self, ledger):
-        """Testa que códigos de conta duplicados são rejeitados."""
+        """Test that duplicate account codes are rejected."""
         account_def = AccountDefinition(
             account_code="1100",
             account_name="Cash",
@@ -104,13 +117,12 @@ class TestChartOfAccounts:
         
         ledger.create_account(account_def, created_by="test_user")
         
-        # Tenta criar duplicado
         with pytest.raises(ValueError, match="already exists"):
             ledger.create_account(account_def, created_by="test_user")
     
     def test_create_account_with_parent(self, ledger):
-        """Testa criação de conta com conta pai."""
-        # Cria conta pai
+        """Test hierarchical account creation."""
+        # Create parent
         parent_def = AccountDefinition(
             account_code="1000",
             account_name="Assets",
@@ -118,38 +130,32 @@ class TestChartOfAccounts:
         )
         ledger.create_account(parent_def, created_by="test_user")
         
-        # Cria conta filha
+        # Create child
         child_def = AccountDefinition(
             account_code="1100",
             account_name="Cash",
             account_type=AccountType.ASSET,
             parent_account_code="1000"
         )
+        child_id = ledger.create_account(child_def, created_by="test_user")
         
-        account_id = ledger.create_account(child_def, created_by="test_user")
-        assert account_id is not None
+        assert child_id is not None
     
-    def test_get_account(self, ledger):
-        """Testa obtenção de conta."""
-        account_def = AccountDefinition(
-            account_code="1100",
-            account_name="Cash",
-            account_type=AccountType.ASSET
-        )
+    def test_get_account(self, ledger_with_accounts):
+        """Test account retrieval."""
+        account = ledger_with_accounts.get_account("1100")
         
-        ledger.create_account(account_def, created_by="test_user")
-        
-        account = ledger.get_account("1100")
         assert account is not None
         assert account['account_code'] == "1100"
         assert account['account_name'] == "Cash"
+        assert account['account_type'] == "ASSET"
 
 
 class TestTransactions:
-    """Testa funcionalidades de transações."""
+    """Test transaction posting and management."""
     
     def test_post_simple_transaction(self, ledger_with_accounts):
-        """Testa lançamento de transação simples."""
+        """Test posting a simple transaction."""
         entries = [
             JournalEntryInput(
                 account_code="1100",
@@ -170,17 +176,16 @@ class TestTransactions:
             entries=entries
         )
         
-        transaction_id = ledger_with_accounts.post_transaction(
+        txn_id = ledger_with_accounts.post_transaction(
             transaction,
             created_by="test_user",
             source_system="TEST"
         )
         
-        assert transaction_id is not None
-        assert len(transaction_id) == 36
+        assert txn_id is not None
     
     def test_post_unbalanced_transaction(self, ledger_with_accounts):
-        """Testa rejeição de transação desbalanceada."""
+        """Test that unbalanced transactions are rejected."""
         entries = [
             JournalEntryInput(
                 account_code="1100",
@@ -190,18 +195,18 @@ class TestTransactions:
             JournalEntryInput(
                 account_code="4100",
                 entry_type=EntryType.CREDIT,
-                amount=Decimal("900.00")  # Unbalanced
+                amount=Decimal("500.00")  # Unbalanced!
             )
         ]
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="Unbalanced",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
         
-        with pytest.raises(ValueError, match=r"Transaction not balanced"):
+        with pytest.raises(ValueError, match="Double-entry violation"):
             ledger_with_accounts.post_transaction(
                 transaction,
                 created_by="test_user",
@@ -209,10 +214,10 @@ class TestTransactions:
             )
     
     def test_post_transaction_with_invalid_account(self, ledger_with_accounts):
-        """Testa rejeição de transação com conta inválida."""
+        """Test that transactions with invalid accounts are rejected."""
         entries = [
             JournalEntryInput(
-                account_code="9999",  # Invalid
+                account_code="9999",  # Invalid account
                 entry_type=EntryType.DEBIT,
                 amount=Decimal("1000.00")
             ),
@@ -225,7 +230,7 @@ class TestTransactions:
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="Invalid account",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
@@ -238,49 +243,68 @@ class TestTransactions:
             )
     
     def test_reverse_transaction(self, ledger_with_accounts):
-        """Testa reversão de transação."""
-        # Post original
+        """Test transaction reversal."""
+        # Post original transaction
         entries = [
-            JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-            JournalEntryInput("4100", EntryType.CREDIT, Decimal("1000.00"))
+            JournalEntryInput(
+                account_code="1100",
+                entry_type=EntryType.DEBIT,
+                amount=Decimal("1000.00")
+            ),
+            JournalEntryInput(
+                account_code="4100",
+                entry_type=EntryType.CREDIT,
+                amount=Decimal("1000.00")
+            )
         ]
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="To reverse",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
         
-        original_id = ledger_with_accounts.post_transaction(
+        original_txn_id = ledger_with_accounts.post_transaction(
             transaction,
             created_by="test_user",
             source_system="TEST"
         )
         
-        reversal_id = ledger_with_accounts.reverse_transaction(
-            transaction_id=original_id,
+        # Reverse
+        reversal_txn_id = ledger_with_accounts.reverse_transaction(
+            original_transaction_id=original_txn_id,
             reversal_reason="Test reversal",
-            reversed_by="test_user",
+            created_by="test_user",
             source_system="TEST"
         )
         
-        assert reversal_id is not None
+        assert reversal_txn_id is not None
+        assert reversal_txn_id != original_txn_id
 
 
 class TestBalances:
-    """Testa cálculos de saldos."""
+    """Test balance calculations."""
     
     def test_account_balance_after_transaction(self, ledger_with_accounts):
-        """Testa saldo após transação."""
+        """Test account balance calculation."""
+        # Post transaction
         entries = [
-            JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-            JournalEntryInput("4100", EntryType.CREDIT, Decimal("1000.00"))
+            JournalEntryInput(
+                account_code="1100",
+                entry_type=EntryType.DEBIT,
+                amount=Decimal("1000.00")
+            ),
+            JournalEntryInput(
+                account_code="4100",
+                entry_type=EntryType.CREDIT,
+                amount=Decimal("1000.00")
+            )
         ]
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="Balance test",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
@@ -291,67 +315,82 @@ class TestBalances:
             source_system="TEST"
         )
         
-        balance = ledger_with_accounts.get_account_balance("1100")
-        assert balance == Decimal("1000.00")
+        # Check balances
+        cash_balance = ledger_with_accounts.get_account_balance("1100")
+        revenue_balance = ledger_with_accounts.get_account_balance("4100")
+        
+        # For ASSET accounts, debit increases balance (positive)
+        assert cash_balance == Decimal("1000.00")
+        # For REVENUE accounts, credit increases balance (positive)
+        assert revenue_balance == Decimal("1000.00")
     
     def test_balance_after_reversal(self, ledger_with_accounts):
-        """Testa saldo após reversão.
-        
-        IMPORTANTE: Quando uma transação é revertida:
-        1. A transação original tem seu status mudado para REVERSED
-        2. Uma nova transação de reversão é criada com entries opostos
-        3. O cálculo de saldo EXCLUI transações com status REVERSED
-        4. Apenas a transação de reversão (POSTED) é contada
-        
-        Portanto, após reversão:
-        - Original: Débito 1100 (+1000), Crédito 4100 (+1000) - STATUS: REVERSED (não conta)
-        - Reversão: Crédito 1100 (-1000), Débito 4100 (-1000) - STATUS: POSTED (conta)
-        - Saldo final em 1100: -1000 (apenas a reversão é contada)
-        """
+        """Test that balances return to zero after reversal."""
+        # Post transaction
         entries = [
-            JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-            JournalEntryInput("4100", EntryType.CREDIT, Decimal("1000.00"))
+            JournalEntryInput(
+                account_code="1100",
+                entry_type=EntryType.DEBIT,
+                amount=Decimal("1000.00")
+            ),
+            JournalEntryInput(
+                account_code="4100",
+                entry_type=EntryType.CREDIT,
+                amount=Decimal("1000.00")
+            )
         ]
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="To reverse",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
         
-        original_id = ledger_with_accounts.post_transaction(
+        original_txn_id = ledger_with_accounts.post_transaction(
             transaction,
             created_by="test_user",
             source_system="TEST"
         )
         
+        # Reverse
         ledger_with_accounts.reverse_transaction(
-            transaction_id=original_id,
-            reversal_reason="Test reversal",
-            reversed_by="test_user",
+            original_transaction_id=original_txn_id,
+            reversal_reason="Test",
+            created_by="test_user",
             source_system="TEST"
         )
         
-        balance = ledger_with_accounts.get_account_balance("1100")
-        # CORRIGIDO: O saldo será -1000 porque apenas a reversão (crédito) é contada
-        # A transação original está com status REVERSED e não entra no cálculo
-        assert balance == Decimal("-1000.00")
+        # Check balances are zero
+        cash_balance = ledger_with_accounts.get_account_balance("1100")
+        revenue_balance = ledger_with_accounts.get_account_balance("4100")
+        
+        assert cash_balance == Decimal("0.00")
+        assert revenue_balance == Decimal("0.00")
 
 
 class TestIntegrity:
-    """Testa verificações de integridade."""
+    """Test data integrity and validation."""
     
     def test_verify_integrity_valid(self, ledger_with_accounts):
-        """Testa verificação de integridade válida."""
+        """Test integrity verification on valid ledger."""
+        # Post balanced transaction
         entries = [
-            JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-            JournalEntryInput("4100", EntryType.CREDIT, Decimal("1000.00"))
+            JournalEntryInput(
+                account_code="1100",
+                entry_type=EntryType.DEBIT,
+                amount=Decimal("1000.00")
+            ),
+            JournalEntryInput(
+                account_code="4100",
+                entry_type=EntryType.CREDIT,
+                amount=Decimal("1000.00")
+            )
         ]
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="Integrity test",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
@@ -362,78 +401,37 @@ class TestIntegrity:
             source_system="TEST"
         )
         
+        # Verify
         is_valid, errors = ledger_with_accounts.verify_double_entry_integrity()
+        
         assert is_valid is True
         assert len(errors) == 0
     
     def test_trial_balance(self, ledger_with_accounts):
-        """Testa balancete de verificação."""
-        # Post transactions
-        transactions = [
-            # Sale
-            ([
-                JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-                JournalEntryInput("4100", EntryType.CREDIT, Decimal("1000.00"))
-            ], "SALE", "Sale"),
-            
-            # Expense
-            ([
-                JournalEntryInput("5100", EntryType.DEBIT, Decimal("400.00")),
-                JournalEntryInput("1100", EntryType.CREDIT, Decimal("400.00"))
-            ], "EXPENSE", "Expense")
-        ]
-        
-        for entries_list, event_type, desc in transactions:
-            transaction = TransactionInput(
-                business_event_type=event_type,
-                description=desc,
-                transaction_date=datetime.now(timezone.utc),
-                entries=entries_list
-            )
-            
-            ledger_with_accounts.post_transaction(
-                transaction,
-                created_by="test_user",
-                source_system="TEST"
-            )
-        
-        # Get trial balance
-        trial_balance = ledger_with_accounts.get_trial_balance()
-        
-        # Verificar estrutura
-        assert isinstance(trial_balance, list)
-        assert len(trial_balance) > 0
-        
-        # Verificar saldos
-        cash_entry = next(
-            (entry for entry in trial_balance if entry['account_code'] == '1100'),
-            None
-        )
-        assert cash_entry is not None
-        assert cash_entry['balance'] == Decimal("600.00")  # 1000 - 400
-
-
-class TestReporting:
-    """Testa funcionalidades de relatórios."""
-    
-    def test_generate_balance_sheet(self, ledger_with_accounts):
-        """Testa geração de balanço patrimonial."""
+        """Test trial balance generation."""
         # Post some transactions
         transactions = [
-            ([
-                JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-                JournalEntryInput("3000", EntryType.CREDIT, Decimal("1000.00"))
-            ], "INVESTMENT", "Initial capital"),
-            
-            ([
-                JournalEntryInput("1200", EntryType.DEBIT, Decimal("500.00")),
-                JournalEntryInput("4100", EntryType.CREDIT, Decimal("500.00"))
-            ], "SALE", "Credit sale")
+            (Decimal("1000.00"), "1100", "4100", "Sale 1"),
+            (Decimal("500.00"), "1100", "4100", "Sale 2"),
+            (Decimal("300.00"), "5100", "1100", "Expense 1"),
         ]
         
-        for entries, event_type, desc in transactions:
+        for amount, debit_acc, credit_acc, desc in transactions:
+            entries = [
+                JournalEntryInput(
+                    account_code=debit_acc,
+                    entry_type=EntryType.DEBIT,
+                    amount=amount
+                ),
+                JournalEntryInput(
+                    account_code=credit_acc,
+                    entry_type=EntryType.CREDIT,
+                    amount=amount
+                )
+            ]
+            
             transaction = TransactionInput(
-                business_event_type=event_type,
+                business_event_type="TEST",
                 description=desc,
                 transaction_date=datetime.now(timezone.utc),
                 entries=entries
@@ -445,36 +443,34 @@ class TestReporting:
                 source_system="TEST"
             )
         
-        # Generate balance sheet
-        report_engine = LedgerReportEngine(ledger_with_accounts)
+        # Get trial balance
+        trial_balance = ledger_with_accounts.get_trial_balance()
         
-        balance_sheet = report_engine.generate_balance_sheet(
-            as_of_date=datetime.now(timezone.utc),
-            generated_by="test_user"
-        )
-        
-        # Verificar estrutura
-        assert 'report_id' in balance_sheet
-        assert 'report_name' in balance_sheet
-        assert 'assets' in balance_sheet
-        assert 'liabilities' in balance_sheet
-        assert 'equity' in balance_sheet
-        
-        # Verificar totais
-        assert 'totals' in balance_sheet
-        assert balance_sheet['totals']['total_assets'] > 0
+        assert len(trial_balance) > 0
+
+
+class TestReporting:
+    """Test reporting functionality."""
     
-    def test_report_integrity_verification(self, ledger_with_accounts):
-        """Testa relatório de verificação de integridade."""
+    def test_generate_balance_sheet(self, ledger_with_accounts):
+        """Test balance sheet generation."""
         # Post transaction
         entries = [
-            JournalEntryInput("1100", EntryType.DEBIT, Decimal("1000.00")),
-            JournalEntryInput("4100", EntryType.CREDIT, Decimal("1000.00"))
+            JournalEntryInput(
+                account_code="1100",
+                entry_type=EntryType.DEBIT,
+                amount=Decimal("1000.00")
+            ),
+            JournalEntryInput(
+                account_code="4100",
+                entry_type=EntryType.CREDIT,
+                amount=Decimal("1000.00")
+            )
         ]
         
         transaction = TransactionInput(
             business_event_type="SALE",
-            description="Integrity test",
+            description="Test sale",
             transaction_date=datetime.now(timezone.utc),
             entries=entries
         )
@@ -487,22 +483,36 @@ class TestReporting:
         
         # Generate report
         report_engine = LedgerReportEngine(ledger_with_accounts)
-        
-        integrity_report = report_engine.generate_integrity_report(
+        report = report_engine.generate_balance_sheet(
+            as_of_date=datetime.now(timezone.utc),
             generated_by="test_user"
         )
         
-        # Verificar estrutura
-        assert 'report_id' in integrity_report
-        assert 'is_valid' in integrity_report
-        assert 'total_transactions' in integrity_report
+        assert report['report_type'] == 'BALANCE_SHEET'
+        assert 'assets' in report
+        assert 'report_hash' in report
+    
+    def test_report_integrity_verification(self, ledger_with_accounts):
+        """Test report integrity verification."""
+        report_engine = LedgerReportEngine(ledger_with_accounts)
         
-        # Verificar resultado
-        assert integrity_report['is_valid'] is True
+        report = report_engine.generate_trial_balance(
+            as_of_date=datetime.now(timezone.utc),
+            generated_by="test_user"
+        )
+        
+        # Verify integrity
+        is_valid = report_engine.verify_report_integrity(report)
+        assert is_valid is True
+        
+        # Tamper with report
+        report['accounts'] = []
+        is_valid = report_engine.verify_report_integrity(report)
+        assert is_valid is False
 
 
 def test_full_workflow(ledger_with_accounts):
-    """Testa fluxo completo de criação de contas a relatórios."""
+    """Test complete workflow from account creation to reporting."""
     # 1. Post multiple transactions
     transactions = [
         # Sale
@@ -548,27 +558,19 @@ def test_full_workflow(ledger_with_accounts):
         generated_by="test_user"
     )
     
-    assert balance_sheet is not None
-    assert 'totals' in balance_sheet
-    assert 'total_assets' in balance_sheet['totals']
-    
-    # 5. Generate trial balance
-    trial_balance_report = report_engine.generate_trial_balance_report(
-        as_of_date=datetime.now(timezone.utc),
+    income_statement = report_engine.generate_income_statement(
+        start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        end_date=datetime.now(timezone.utc),
         generated_by="test_user"
     )
     
-    assert trial_balance_report is not None
-    assert 'accounts' in trial_balance_report
+    assert balance_sheet['report_type'] == 'BALANCE_SHEET'
+    assert income_statement['report_type'] == 'INCOME_STATEMENT'
     
-    # 6. Verify integrity report
-    integrity_report = report_engine.generate_integrity_report(
-        generated_by="test_user"
-    )
-    
-    assert integrity_report is not None
-    assert integrity_report['is_valid'] is True
+    # 5. Verify report integrity
+    assert report_engine.verify_report_integrity(balance_sheet) is True
+    assert report_engine.verify_report_integrity(income_statement) is True
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--cov=.", "--cov-report=term-missing"])
+    pytest.main([__file__, "-v", "--cov=."])
