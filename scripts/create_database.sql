@@ -266,7 +266,7 @@ CREATE TABLE `audit_log` (
     `entity_type` VARCHAR(50) NULL COMMENT 'Tipo de entidade',
     `entity_id` VARCHAR(36) NULL COMMENT 'ID da entidade',
     `description` TEXT NOT NULL COMMENT 'Descrição do evento',
-    `metadata` TEXT NULL COMMENT 'Contexto adicional (JSON)',
+    `event_metadata` TEXT NULL COMMENT 'Contexto adicional (JSON)',
     
     -- Constraints
     PRIMARY KEY (`audit_id`),

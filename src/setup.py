@@ -13,7 +13,7 @@ This script will:
 6. Create sample chart of accounts
 
 Usage:
-    python setup.py
+    python -m src.setup
 """
 
 import os
@@ -47,7 +47,7 @@ def create_venv():
     """Create virtual environment."""
     print_header("Creating Virtual Environment")
     
-    venv_path = Path("venv")
+    venv_path = Path("env")
     
     if venv_path.exists():
         print("⚠️  Virtual environment already exists")
@@ -60,7 +60,7 @@ def create_venv():
         shutil.rmtree(venv_path)
     
     print("Creating virtual environment...")
-    subprocess.run([sys.executable, "-m", "venv", "venv"], check=True)
+    subprocess.run([sys.executable, "-m", "venv", "env"], check=True)
     print("✅ Virtual environment created")
 
 
@@ -70,9 +70,9 @@ def install_dependencies():
     
     # Determine pip path
     if sys.platform == "win32":
-        pip_path = Path("venv/Scripts/pip")
+        pip_path = Path("env/Scripts/pip")
     else:
-        pip_path = Path("venv/bin/pip")
+        pip_path = Path("env/bin/pip")
     
     if not pip_path.exists():
         print("❌ Error: Virtual environment not found")
@@ -224,9 +224,9 @@ def show_next_steps():
     print("1. Activate virtual environment:")
     
     if sys.platform == "win32":
-        print("   venv\\Scripts\\activate")
+        print("   env\\Scripts\\activate")
     else:
-        print("   source venv/bin/activate")
+        print("   source env/bin/activate")
     
     print("\n2. Review and edit .env file with your configuration")
     
@@ -257,11 +257,11 @@ def main():
         print("\n⚠️  Please activate the virtual environment and re-run this script:")
         
         if sys.platform == "win32":
-            print("   venv\\Scripts\\activate")
+            print("   env\\Scripts\\activate")
         else:
-            print("   source venv/bin/activate")
+            print("   source env/bin/activate")
         
-        print("   python setup.py\n")
+        print("   python -m src.setup\n")
         
         # Check if we're in a venv
         if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):

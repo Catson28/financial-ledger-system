@@ -30,8 +30,7 @@ from sqlalchemy import (
     create_engine, Column, String, DateTime, Numeric, 
     Boolean, Text, Index, CheckConstraint, ForeignKey
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -226,7 +225,7 @@ class AuditLog(Base):
     
     # Context
     description = Column(Text, nullable=False)
-    metadata = Column(Text, nullable=True)  # JSON
+    event_metadata = Column(Text, nullable=True)  # JSON
     
     __table_args__ = (
         Index('idx_event_timestamp', 'event_timestamp'),
@@ -347,7 +346,7 @@ class LedgerEngine:
             source_ip=source_ip,
             action=action,
             description=description,
-            metadata=json.dumps(metadata) if metadata else None
+            event_metadata=json.dumps(metadata) if metadata else None
         )
         session.add(audit)
     

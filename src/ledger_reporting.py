@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
-from ledger_engine import (
+from src.ledger_engine import (
     LedgerEngine, AccountType, TransactionStatus,
     Base, ChartOfAccounts, Transaction, JournalEntry, AuditLog
 )
